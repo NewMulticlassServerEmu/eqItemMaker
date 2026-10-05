@@ -6,6 +6,47 @@ use POSIX qw(ceil);
 use JSON;
 use Getopt::Long;
 
+# =====================================================================================================
+# HISTORY NOTE - 2026-10-05 - Legendary heroic stats bug (fixed below in calculate_legendary_stats)
+#
+# WHAT WAS WRONG
+#   The Legendary step built its row from the Enchanted row (which carries the base item's own heroic
+#   stats untouched) and then did
+#       $stats{$heroic_stat} = ceil($base->{$normal_stat} * 0.25);
+#   The '=' REPLACED the base item's heroic stat with the 25% bonus instead of adding the bonus to it.
+#   Any item whose base already has heroic stats (SoF-era and later gear, ~20,500 items) got a
+#   Legendary with LOWER heroics than its Enchanted copy. Example, 141490 Jagged Iridescent Sword:
+#   base/Enchanted heroic STR 13 -> Legendary heroic STR 6.
+#
+# HOW IT WAS FOUND
+#   Bug report "Shard from Unfathomable Depths (8725) missing legendary stats", then a database audit
+#   of all 63,090 base/Enchanted/Legendary triples (claude/notes/item_tiers_audit_2026-10-05/).
+#   8,945 of the 9,626 "Legendary heroics below Enchanted" items were this line's output exactly.
+#
+# WHAT ELSE THE AUDIT FOUND (not this file's fault, but why the data had to be regenerated)
+#   An OLDER version of this script had been run on items with ids below ~70,000 and used different
+#   rules: Enchanted core stats x1.5 (not x2), Legendary heroics = 25% of the ENCHANTED stat (the old
+#   "set to 25% of enchanted" comment below is a leftover of that), a DEX-based Accuracy bonus
+#   ("removed per updated rules"), +5/+10 HP and mana on items that had none, and doubled
+#   elemental/bane damage. ~600 Legendary rows (the Shard among them) never got the Legendary step at
+#   all, so their SD/HA stayed 0 while their Enchanted copy had some. Also, --no-new-only update mode
+#   only RAISES a column, so re-running this script never corrected any of that.
+#
+# THE FIX
+#   1) This file: the heroic loop below now ADDS the bonus to the base heroic stat, and the stale
+#      "25% of enchanted" comment is corrected. New items generated from here on are right.
+#   2) The database: NMS-Server manifest v421 regenerates every tiered wearable item from its base with
+#      the formulas in this file (heroics additive), raising AND lowering, so every item sits on one
+#      curve. It skips bags, glamours, Hero's Forge, ornament augments, mounts, epics and items THJ
+#      hand-edited (a tier gained an effect or changed slots/classes/delay). A permanent health-check
+#      row (nms_content_health_check.sql, v421) fails if any in-scope tier ever leaves the curve again.
+#
+# RULE FOR EDITING ITEMS FROM NOW ON
+#   Change the BASE item and let the curve derive the tiers (re-run this script with --no-new-only, or
+#   the manifest's formula). Do not hand-type stats into a +1000000 / +2000000 row; the health check
+#   will flag it.
+# =====================================================================================================
+
 # Default configuration
 my $new_only = 1;             # Only create new items by default
 my $process_enchanted = 1;    # Process enchanted items by default
@@ -418,7 +459,9 @@ sub calculate_legendary_stats {
     $stats{id} = $base->{id} + 2000000;
     $stats{Name} = $base->{Name} . " (Legendary)";
     
-    # List of stats that need heroic versions set to 25% of enchanted
+    # Regular stat -> heroic stat pairs. The Legendary heroic stat is the base item's own heroic value
+    # PLUS 25% of the base item's regular stat (rounded up). (An older run used 25% of the Enchanted
+    # stat; the "set to 25% of enchanted" wording that used to be here described that version.)
     my @heroic_stats = (
         ["astr", "heroic_str"],
         ["adex", "heroic_dex"],
@@ -435,13 +478,23 @@ sub calculate_legendary_stats {
     );
     
     # Add 25% of base values to heroic stats (round up)
+    #
+    # BUG FIXED 2026-10-05 (see the HISTORY NOTE at the top of this file). The original loop was:
+    #
+    #     if (non_negative($base->{$normal_stat})) {
+    #         $stats{$heroic_stat} = ceil($base->{$normal_stat} * 0.25);   # '=' replaced the base heroic
+    #     } else {
+    #         $stats{$heroic_stat} = 0;                                    # and this wiped it outright
+    #     }
+    #
+    # %stats was copied from the Enchanted row, so $stats{$heroic_stat} already held the base item's
+    # own heroic stat. Assigning over it meant a Legendary could have LOWER heroics than its Enchanted
+    # copy whenever the base item had heroics of its own. The bonus must be ADDED to the base heroic.
     foreach my $pair (@heroic_stats) {
         my ($normal_stat, $heroic_stat) = @$pair;
-        if (non_negative($base->{$normal_stat})) {
-            $stats{$heroic_stat} = ceil($base->{$normal_stat} * 0.25);
-        } else {
-            $stats{$heroic_stat} = 0;
-        }
+        my $base_heroic = non_negative($base->{$heroic_stat}) ? $base->{$heroic_stat} : 0;
+        my $bonus       = non_negative($base->{$normal_stat}) ? ceil($base->{$normal_stat} * 0.25) : 0;
+        $stats{$heroic_stat} = $base_heroic + $bonus;
     }
     
     # List of stats to add additional 50% (double base values)
