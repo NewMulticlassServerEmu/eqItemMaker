@@ -41,6 +41,15 @@ use Getopt::Long;
 #      hand-edited (a tier gained an effect or changed slots/classes/delay). A permanent health-check
 #      row (nms_content_health_check.sql, v421) fails if any in-scope tier ever leaves the curve again.
 #
+# INSTRUMENT SONG MODIFIER (bardvalue) - DECISION 2026-10-05
+#   This script used to double bardvalue at Enchanted and triple it at Legendary. That is no longer done:
+#   bardvalue stays at the base value on every tier. Reason: an instrument's "Focus Effect: <Family>
+#   Resonance N" tooltip is a LABEL spell (items.bardeffect) whose N must equal bardvalue - 10 (server
+#   manifest v368), and every label spell must also exist in the client's spells_us.txt. Scaling bardvalue
+#   here silently breaks those labels and forces a client file change for what should be a data fix.
+#   The v421 database regeneration therefore left bardvalue untouched as well. If the song modifier is
+#   ever to scale by tier, that is a separate decision: labels, label spells and the client file together.
+#
 # RULE FOR EDITING ITEMS FROM NOW ON
 #   Change the BASE item and let the curve derive the tiers (re-run this script with --no-new-only, or
 #   the manifest's formula). Do not hand-type stats into a +1000000 / +2000000 row; the health check
@@ -382,7 +391,10 @@ sub calculate_enchanted_stats {
     my %stats;
     
     # List of stats to be doubled
-    my @double_stats = qw(ac astr adex asta aagi aint awis acha hp mana endur mr fr cr dr pr damage bardvalue);
+    # bardvalue (the instrument song modifier) is NOT in this list any more (2026-10-05, see the HISTORY
+    # NOTE): it stays at the base value on every tier. Its tooltip label (items.bardeffect, a 'Resonance N'
+    # label spell, N = value - 10) must always match it, and scaling it here would silently break that.
+    my @double_stats = qw(ac astr adex asta aagi aint awis acha hp mana endur mr fr cr dr pr damage);
     
     # List of stats to preserve (no scaling)
     my @preserve_stats = qw(haste enduranceregen shielding spellshield dotshielding dsmitigation damageshield strikethrough accuracy combateffects avoidance stunresist);
@@ -535,10 +547,9 @@ sub calculate_legendary_stats {
         $stats{backstabdmg} = $stats{damage} * 2;
     }
     
-    # Triple bardvalue from base
-    if (non_negative($base->{bardvalue})) {
-        $stats{bardvalue} = ceil($base->{bardvalue} * 3);
-    }
+    # bardvalue used to be tripled here ("Triple bardvalue from base"). Removed 2026-10-05: the instrument
+    # song modifier is left at the base value on every tier (see the HISTORY NOTE). The old code was:
+    #     if (non_negative($base->{bardvalue})) { $stats{bardvalue} = ceil($base->{bardvalue} * 3); }
     
     # Adjust proc rate if there's a proc effect
     if (non_negative($base->{proceffect}) && $base->{proceffect} > 0) {
