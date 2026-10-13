@@ -50,9 +50,21 @@ use Getopt::Long;
 #   The v421 database regeneration therefore left bardvalue untouched as well. If the song modifier is
 #   ever to scale by tier, that is a separate decision: labels, label spells and the client file together.
 #
+# 2026-10-12 - GENERATOR V2 (supersedes THE FIX above; the v421 curve was reverted by server manifest v622-v661)
+#   The v421 curve cut in-game Legendary heroics ~40% and quadrupled attack. The owner restored every tier to its
+#   pre-10-05 value and asked for ONE formula that matches the Classic-LoY tiers players know. v2_tiers() below is
+#   THJ's old formula, fitted on those 11,452 items (exact on every stat for 70%, 96-99% per stat): core stats,
+#   resists, HP, mana, damage x2 (armor with no HP / mana: +5 / +10); endurance and the old stats flat; regen and
+#   mana regen x1.5 / x2; haste x1.25 / x1.5; attack = higher of own and 25% / 50% of STR+DEX; spell damage =
+#   higher of own and INT (or half WIS), heal amount = higher of own and WIS, Legendary x2; Legendary heroics =
+#   base heroic + 25% of the Enchanted stat; Legendary accuracy + 25% of the Enchanted DEX (turned into heroic DEX
+#   for ToB). Server manifest v663-v677 applied it in the database: Classic-LoY tiers untouched except where a
+#   Legendary stat sat below its Enchanted; LDoN, GoD, LoN, achievements, later eras rebuilt. Afterwards no
+#   Legendary anywhere has a stat below its Enchanted (health check row v677).
+
 # RULE FOR EDITING ITEMS FROM NOW ON
-#   Change the BASE item and let the curve derive the tiers (re-run this script with --no-new-only, or
-#   the manifest's formula). Do not hand-type stats into a +1000000 / +2000000 row; the health check
+#   Change the BASE item and let the formula derive the tiers (re-run this script with --no-new-only, which only
+#   RAISES columns, or the manifest's formula). Do not hand-type stats into a +1000000 / +2000000 row; the health check
 #   will flag it.
 # =====================================================================================================
 
@@ -385,177 +397,118 @@ sub process_specific_items {
     print "\nCompleted $type items processing.\n";
 }
 
+# Generator v2 (2026-10-12, see the HISTORY NOTE): THJ's old formula, fitted on the Classic-LoY tiers players have,
+# with the two choices that keep every Legendary at or above its Enchanted. Both tiers come from the BASE row only.
+# Returns (\%enchanted, \%legendary) for the stat columns. Negative base values are kept as they are.
+sub v2_tiers {
+    my ($b) = @_;
+    my $v = sub { my $x = $b->{$_[0]}; return (defined $x && $x ne '') ? $x : 0; };
+    my $pos = sub { return $_[0] > 0 ? $_[0] : 0; };
+    my (%e, %l);
+    foreach my $s (qw(ac astr adex asta aagi aint awis acha hp mana mr fr cr dr pr damage)) {
+        $e{$s} = $l{$s} = $v->($s) > 0 ? 2 * $v->($s) : $v->($s);
+    }
+    if ($v->('itemtype') == 10) {                               # armor with no HP / mana gets a little
+        foreach my $s (qw(hp mana)) {
+            if ($v->($s) == 0) { $e{$s} = 5; $l{$s} = 10; }
+        }
+    }
+    foreach my $s (qw(endur enduranceregen shielding spellshield dotshielding dsmitigation damageshield strikethrough avoidance stunresist)) {
+        $e{$s} = $l{$s} = $v->($s);                             # flat: endurance and the old stats
+    }
+    foreach my $s (qw(regen manaregen)) {
+        if ($v->($s) > 0) { $e{$s} = int((3 * $v->($s) + 1) / 2); $l{$s} = 2 * $v->($s); }   # x1.5 rounded up, x2
+        else { $e{$s} = $l{$s} = $v->($s); }
+    }
+    if ($v->('haste') > 0) { $e{haste} = int(5 * $v->('haste') / 4); $l{haste} = int(3 * $v->('haste') / 2); }
+    else { $e{haste} = $l{haste} = $v->('haste'); }
+    $e{accuracy} = $v->('accuracy');
+    $l{accuracy} = $pos->($v->('accuracy')) + int(($pos->($e{adex}) + 3) / 4);                # + 25% of the Enchanted DEX
+    my $sd = $pos->($v->('astr')) + $pos->($v->('adex'));
+    my $q25 = int(($sd + 2) / 4); my $q50 = int(($sd + 1) / 2);
+    $e{attack} = $v->('attack') > $q25 ? $v->('attack') : $q25;                                 # higher of own, 25% STR+DEX
+    $l{attack} = $e{attack} > $q50 ? $e{attack} : $q50;                                         # higher of that, 50%
+    my $from_int = $v->('aint') > 0 ? $v->('aint') : ($v->('awis') > 0 ? int(($v->('awis') + 1) / 2) : 0);
+    my $from_wis = $v->('awis') > 0 ? $v->('awis') : 0;
+    $e{spelldmg} = $v->('spelldmg') > $from_int ? $v->('spelldmg') : $from_int;                # higher of own and INT (or half WIS)
+    $e{healamt}  = $v->('healamt') > $from_wis ? $v->('healamt') : $from_wis;                  # higher of own and WIS
+    $l{spelldmg} = 2 * $e{spelldmg};
+    $l{healamt}  = 2 * $e{healamt};
+    foreach my $pair (["heroic_str","astr"],["heroic_sta","asta"],["heroic_agi","aagi"],["heroic_dex","adex"],["heroic_int","aint"],
+                      ["heroic_wis","awis"],["heroic_cha","acha"],["heroic_mr","mr"],["heroic_fr","fr"],["heroic_cr","cr"],["heroic_dr","dr"],["heroic_pr","pr"]) {
+        my ($h, $s) = @$pair;
+        $e{$h} = $v->($h);
+        $l{$h} = $pos->($v->($h)) + int(($pos->($e{$s}) + 3) / 4);                            # base heroic + 25% of the Enchanted stat
+    }
+    tob_accuracy_to_heroic_dex($_) for (\%e, \%l);
+    return (\%e, \%l);
+}
+
+# The ToB client has no Accuracy stat: the server's ToB conversion (manifest v586) turns it into a floor on heroic DEX
+# (1 to 3 Accuracy = 1, 4 and up = 1 + ceil(Accuracy / 8)) and sets Accuracy to 0. Done here too, so a newly generated
+# tier matches what the conversion gave every existing one.
+sub tob_accuracy_to_heroic_dex {
+    my ($r) = @_;
+    my $a = $r->{accuracy} || 0;
+    return if $a <= 0;
+    my $s = $a <= 3 ? 1 : 1 + int(($a + 7) / 8);
+    $r->{heroic_dex} = $s if $s > ($r->{heroic_dex} || 0);
+    $r->{accuracy} = 0;
+}
+
 # Calculate expected stats for Enchanted version
 sub calculate_enchanted_stats {
     my ($base) = @_;
-    my %stats;
-    
-    # List of stats to be doubled
-    # bardvalue (the instrument song modifier) is NOT in this list any more (2026-10-05, see the HISTORY
-    # NOTE): it stays at the base value on every tier. Its tooltip label (items.bardeffect, a 'Resonance N'
-    # label spell, N = value - 10) must always match it, and scaling it here would silently break that.
-    my @double_stats = qw(ac astr adex asta aagi aint awis acha hp mana endur mr fr cr dr pr damage);
-    
-    # List of stats to preserve (no scaling)
-    my @preserve_stats = qw(haste enduranceregen shielding spellshield dotshielding dsmitigation damageshield strikethrough accuracy combateffects avoidance stunresist);
-    
-    # List of stats to add 50%
-    my @fifty_percent_stats = qw(regen manaregen);
-    
-    # Double specific stats, ensuring no negative values (round up)
-    foreach my $stat (@double_stats) {
-        $stats{$stat} = non_negative($base->{$stat}) ? ceil($base->{$stat} * 2) : 0;
-    }
-    
-    # Add 50% to specific stats (round up)
-    foreach my $stat (@fifty_percent_stats) {
-        $stats{$stat} = non_negative($base->{$stat}) ? ceil($base->{$stat} * 1.5) : 0;
-    }
-    
-    # Preserve stats (copy as is, but ensure non-negative)
-    foreach my $stat (@preserve_stats) {
-        $stats{$stat} = non_negative($base->{$stat}) ? $base->{$stat} : 0;
-    }
-    
+    my ($e, $l) = v2_tiers($base);
+    my %stats = %$e;
+
+    # bardvalue (the instrument song modifier) stays at the base value on every tier (2026-10-05, see the HISTORY
+    # NOTE): its tooltip label (items.bardeffect, a 'Resonance N' label spell, N = value - 10) must match it.
+
     # Set backstabdmg to twice the damage value (only if base item had backstabdmg)
     if (defined $stats{damage} && non_negative($base->{backstabdmg})) {
         $stats{backstabdmg} = $stats{damage} * 2;
     }
-    
-    # +25% of each str and dex to attack (post-doubling)
-    if (non_negative($base->{attack})) {
-        my $str_bonus = non_negative($stats{astr}) ? ceil($stats{astr} * 0.25) : 0;
-        my $dex_bonus = non_negative($stats{adex}) ? ceil($stats{adex} * 0.25) : 0;
-        $stats{attack} = ceil($base->{attack} * 2) + $str_bonus + $dex_bonus;
-    } else {
-        $stats{attack} = 0;
-    }
-    
-    # +50% of int to spelldmg (post-doubling)
-    if (non_negative($base->{spelldmg})) {
-        my $int_bonus = non_negative($stats{aint}) ? ceil($stats{aint} * 0.5) : 0;
-        $stats{spelldmg} = ceil($base->{spelldmg} * 2) + $int_bonus;
-    }
-    
-    # +50% of wis to healamt (post-doubling)
-    if (non_negative($base->{healamt})) {
-        my $wis_bonus = non_negative($stats{awis}) ? ceil($stats{awis} * 0.5) : 0;
-        $stats{healamt} = ceil($base->{healamt} * 2) + $wis_bonus;
-    }
-    
-    # +25% of dex to accuracy (post-doubling) - removed per updated rules
-    if (non_negative($base->{accuracy})) {
-        $stats{accuracy} = $base->{accuracy}; # Preserve original value
-    }
-    
+
     # Adjust proc rate if there's a proc effect
     $stats{procrate} = non_negative($base->{procrate}) ? $base->{procrate} : 0;
     if (non_negative($base->{proceffect}) && $base->{proceffect} > 0) {
         $stats{procrate} += 10;
     }
-    
+
     return \%stats;
 }
 
-# Calculate expected stats for Legendary version
+# Calculate expected stats for Legendary version. The stat columns come from the base item (v2_tiers); every
+# other column is copied from the Enchanted row as before.
 sub calculate_legendary_stats {
     my ($base, $enchanted) = @_;
     my %stats;
-    
+
     # Copy all enchanted values first
     foreach my $key (keys %$enchanted) {
         $stats{$key} = $enchanted->{$key};
     }
-    
+
     # Set ID and name properly (these will be overridden later in process_special_version)
     $stats{id} = $base->{id} + 2000000;
     $stats{Name} = $base->{Name} . " (Legendary)";
-    
-    # Regular stat -> heroic stat pairs. The Legendary heroic stat is the base item's own heroic value
-    # PLUS 25% of the base item's regular stat (rounded up). (An older run used 25% of the Enchanted
-    # stat; the "set to 25% of enchanted" wording that used to be here described that version.)
-    my @heroic_stats = (
-        ["astr", "heroic_str"],
-        ["adex", "heroic_dex"],
-        ["asta", "heroic_sta"],
-        ["aagi", "heroic_agi"],
-        ["aint", "heroic_int"],
-        ["awis", "heroic_wis"],
-        ["acha", "heroic_cha"],
-        ["mr", "heroic_mr"],
-        ["fr", "heroic_fr"],
-        ["cr", "heroic_cr"],
-        ["dr", "heroic_dr"],
-        ["pr", "heroic_pr"]
-    );
-    
-    # Add 25% of base values to heroic stats (round up)
-    #
-    # BUG FIXED 2026-10-05 (see the HISTORY NOTE at the top of this file). The original loop was:
-    #
-    #     if (non_negative($base->{$normal_stat})) {
-    #         $stats{$heroic_stat} = ceil($base->{$normal_stat} * 0.25);   # '=' replaced the base heroic
-    #     } else {
-    #         $stats{$heroic_stat} = 0;                                    # and this wiped it outright
-    #     }
-    #
-    # %stats was copied from the Enchanted row, so $stats{$heroic_stat} already held the base item's
-    # own heroic stat. Assigning over it meant a Legendary could have LOWER heroics than its Enchanted
-    # copy whenever the base item had heroics of its own. The bonus must be ADDED to the base heroic.
-    foreach my $pair (@heroic_stats) {
-        my ($normal_stat, $heroic_stat) = @$pair;
-        my $base_heroic = non_negative($base->{$heroic_stat}) ? $base->{$heroic_stat} : 0;
-        my $bonus       = non_negative($base->{$normal_stat}) ? ceil($base->{$normal_stat} * 0.25) : 0;
-        $stats{$heroic_stat} = $base_heroic + $bonus;
-    }
-    
-    # List of stats to add additional 50% (double base values)
-    my @double_base_stats = qw(regen manaregen);
-    
-    # List of stats to preserve from enchanted (no additional scaling)
-    my @preserve_stats = qw(haste enduranceregen shielding spellshield dotshielding dsmitigation damageshield strikethrough accuracy combateffects avoidance stunresist);
-    
-    # Add another 50% to these stats (round up)
-    foreach my $stat (@double_base_stats) {
-        if (non_negative($enchanted->{$stat})) {
-            $stats{$stat} = ceil($enchanted->{$stat} * 1.5); # already 1.5x base, now 1.5x that = 2.25x base
-        } else {
-            $stats{$stat} = 0;
-        }
-    }
-    
-    # Preserve these stats from enchanted (which are same as base)
-    foreach my $stat (@preserve_stats) {
-        $stats{$stat} = non_negative($enchanted->{$stat}) ? $enchanted->{$stat} : 0;
-    }
-    
-    # Double spelldmg, healamt, attack from enchanted (round up)
-    if (non_negative($enchanted->{spelldmg})) {
-        $stats{spelldmg} = ceil($enchanted->{spelldmg} * 2);
-    }
-    
-    if (non_negative($enchanted->{healamt})) {
-        $stats{healamt} = ceil($enchanted->{healamt} * 2);
-    }
-    
-    if (non_negative($enchanted->{attack})) {
-        $stats{attack} = ceil($enchanted->{attack} * 2);
-    }
-    
+
+    my ($e, $l) = v2_tiers($base);
+    $stats{$_} = $l->{$_} for keys %$l;
+
     # Set backstabdmg to twice the damage value (only if base item had backstabdmg)
     if (defined $stats{damage} && non_negative($base->{backstabdmg})) {
         $stats{backstabdmg} = $stats{damage} * 2;
     }
-    
-    # bardvalue used to be tripled here ("Triple bardvalue from base"). Removed 2026-10-05: the instrument
-    # song modifier is left at the base value on every tier (see the HISTORY NOTE). The old code was:
-    #     if (non_negative($base->{bardvalue})) { $stats{bardvalue} = ceil($base->{bardvalue} * 3); }
-    
+
+    # bardvalue is not scaled (see calculate_enchanted_stats and the HISTORY NOTE).
+
     # Adjust proc rate if there's a proc effect
     if (non_negative($base->{proceffect}) && $base->{proceffect} > 0) {
         $stats{procrate} += 10; # +10 additional (on top of the +10 from enchanted)
     }
-    
+
     return \%stats;
 }
 
