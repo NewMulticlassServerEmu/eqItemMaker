@@ -294,6 +294,9 @@ sub process_specific_items {
         if ($exclude_glamour) {
             $query .= " AND base.Name NOT LIKE 'Glamour -%'";
         }
+        # Owner 10-19: never make Enchanted / Legendary copies of ornament augments (ornament slot types 20 / 21, or an
+        # augment named "... Ornament"): their tiers had no purpose and were deleted (server manifest v757).
+        $query .= " AND NOT (base.itemtype = 54 AND ((base.augtype & (524288 | 1048576)) <> 0 OR base.Name LIKE '%Ornament%'))";
         
         $query .= " HAVING needs_special = TRUE";
     } else {
@@ -323,6 +326,8 @@ sub process_specific_items {
         if ($exclude_glamour) {
             $query .= " AND Name NOT LIKE 'Glamour -%'";
         }
+        # Owner 10-19: never tier ornament augments (see above).
+        $query .= " AND NOT (itemtype = 54 AND ((augtype & (524288 | 1048576)) <> 0 OR Name LIKE '%Ornament%'))";
     }
     
     my $items = $dbh->prepare($query);
