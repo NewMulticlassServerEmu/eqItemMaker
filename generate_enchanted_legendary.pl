@@ -297,6 +297,8 @@ sub process_specific_items {
         # Owner 10-19: never make Enchanted / Legendary copies of ornament augments (ornament slot types 20 / 21, or an
         # augment named "... Ornament"): their tiers had no purpose and were deleted (server manifest v757).
         $query .= " AND NOT (base.itemtype = 54 AND ((base.augtype & (524288 | 1048576)) <> 0 OR base.Name LIKE '%Ornament%'))";
+        # Owner 10-19: never tier mounts (click SPA 113) or familiars (click SPA 108); their tiers were deleted (manifest v758).
+        $query .= " AND base.clickeffect NOT IN (SELECT id FROM spells_new WHERE 113 IN (effectid1,effectid2,effectid3,effectid4,effectid5,effectid6,effectid7,effectid8,effectid9,effectid10,effectid11,effectid12) OR 108 IN (effectid1,effectid2,effectid3,effectid4,effectid5,effectid6,effectid7,effectid8,effectid9,effectid10,effectid11,effectid12))";
         
         $query .= " HAVING needs_special = TRUE";
     } else {
@@ -328,6 +330,8 @@ sub process_specific_items {
         }
         # Owner 10-19: never tier ornament augments (see above).
         $query .= " AND NOT (itemtype = 54 AND ((augtype & (524288 | 1048576)) <> 0 OR Name LIKE '%Ornament%'))";
+        # Owner 10-19: never tier mounts or familiars (see above).
+        $query .= " AND clickeffect NOT IN (SELECT id FROM spells_new WHERE 113 IN (effectid1,effectid2,effectid3,effectid4,effectid5,effectid6,effectid7,effectid8,effectid9,effectid10,effectid11,effectid12) OR 108 IN (effectid1,effectid2,effectid3,effectid4,effectid5,effectid6,effectid7,effectid8,effectid9,effectid10,effectid11,effectid12))";
     }
     
     my $items = $dbh->prepare($query);
