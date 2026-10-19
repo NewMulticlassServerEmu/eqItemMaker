@@ -61,6 +61,18 @@ use Getopt::Long;
 #   for ToB). Server manifest v663-v677 applied it in the database: Classic-LoY tiers untouched except where a
 #   Legendary stat sat below its Enchanted; LDoN, GoD, LoN, achievements, later eras rebuilt. Afterwards no
 #   Legendary anywhere has a stat below its Enchanted (health check row v677).
+#
+# 2026-10-19 - ITEMS FIT THE ToB CLIENT ITEM RECORD (owner: "fix our items the way ToB actually expects them")
+#   The ToB client's item record holds the six resists and seven stats as signed 8-bit (-128..127), elemental damage as
+#   unsigned 8-bit (0..255), and has NO heroic resists. Server manifest v748-v756 made every items row fit it (each row's
+#   heroic resist added to its own resist, then everything clamped; originals in items_tob_client_limits_original), and
+#   the server loader applies the same rule. This script does the same as its LAST step (tob_item_record): the Legendary
+#   resist bonus that used to go to heroic_mr/fr/cr/dr/pr now lands in mr/fr/cr/dr/pr (and any base heroic resist, incl.
+#   heroic_svcorrup, folds into its resist), every stat and resist is capped at 127 (floored at -128), elemental damage
+#   at 255, and no heroic resist is ever written. The bonuses are still worked out from the unclamped Enchanted values,
+#   exactly as the rows in the database were, so a regenerated tier equals what v748-v756 left there -- except for the
+#   21 base items that carried a heroic resist themselves (2586, 25865, 25866, 900010-900020, 976018-976032): their base
+#   row is folded now too, so the doubling starts from the folded value (most of them sit at 127 either way).
 
 # RULE FOR EDITING ITEMS FROM NOW ON
 #   Change the BASE item and let the formula derive the tiers (re-run this script with --no-new-only, which only
@@ -413,8 +425,9 @@ sub v2_tiers {
             if ($v->($s) == 0) { $e{$s} = 5; $l{$s} = 10; }
         }
     }
-    foreach my $s (qw(endur enduranceregen shielding spellshield dotshielding dsmitigation damageshield strikethrough avoidance stunresist)) {
-        $e{$s} = $l{$s} = $v->($s);                             # flat: endurance and the old stats
+    foreach my $s (qw(endur enduranceregen shielding spellshield dotshielding dsmitigation damageshield strikethrough avoidance stunresist
+                      svcorruption heroic_svcorrup elemdmgamt)) {
+        $e{$s} = $l{$s} = $v->($s);                             # flat: endurance, the old stats, corruption, elemental damage
     }
     foreach my $s (qw(regen manaregen)) {
         if ($v->($s) > 0) { $e{$s} = int((3 * $v->($s) + 1) / 2); $l{$s} = 2 * $v->($s); }   # x1.5 rounded up, x2
@@ -441,7 +454,26 @@ sub v2_tiers {
         $l{$h} = $pos->($v->($h)) + int(($pos->($e{$s}) + 3) / 4);                            # base heroic + 25% of the Enchanted stat
     }
     tob_accuracy_to_heroic_dex($_) for (\%e, \%l);
+    tob_item_record($_) for (\%e, \%l);                        # LAST: fit the ToB client item record (2026-10-19)
     return (\%e, \%l);
+}
+
+# The ToB client item record (2026-10-19, see the HISTORY NOTE; same rule as server manifest v748-v756 and the server's
+# item loader): no heroic resists -- each one is added to its own resist; the six resists and seven stats -128..127;
+# elemental damage at most 255. Never writes a heroic resist other than 0.
+sub tob_item_record {
+    my ($r) = @_;
+    my $clamp = sub { my $x = $_[0] || 0; return $x > 127 ? 127 : ($x < -128 ? -128 : $x); };
+    foreach my $pair (["mr","heroic_mr"],["fr","heroic_fr"],["cr","heroic_cr"],["dr","heroic_dr"],["pr","heroic_pr"],
+                      ["svcorruption","heroic_svcorrup"]) {
+        my ($s, $h) = @$pair;
+        $r->{$s} = $clamp->(($r->{$s} || 0) + ($r->{$h} || 0));
+        $r->{$h} = 0;
+    }
+    foreach my $s (qw(astr asta aagi adex awis aint acha)) {
+        $r->{$s} = $clamp->($r->{$s});
+    }
+    $r->{elemdmgamt} = 255 if ($r->{elemdmgamt} || 0) > 255;
 }
 
 # The ToB client has no Accuracy stat: the server's ToB conversion (manifest v586) turns it into a floor on heroic DEX
