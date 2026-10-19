@@ -74,19 +74,6 @@ use Getopt::Long;
 #   21 base items that carried a heroic resist themselves (2586, 25865, 25866, 900010-900020, 976018-976032): their base
 #   row is folded now too, so the doubling starts from the folded value (most of them sit at 127 either way).
 
-#
-# 2026-10-19 - EVERY LEGENDARY BEATS ITS ENCHANTED COPY IN AT LEAST ONE STAT (owner order, gameplay change)
-#   5,783 Legendary rows were not better than their Enchanted copy in anything (the formula leaves Legendary hp / mana /
-#   AC / plain stats = Enchanted, so an item with only those got nothing). After building a Legendary this script now
-#   runs the owner's test (legendary_is_better: hp, mana, endurance, AC, damage, a faster delay, attack, the 7 stats, 6
-#   resists, 7 heroic stats, the regens, haste, spell damage, heal amount, elemental / bane damage, the instrument mod, bag
-#   slots / weight reduction, or a different focus / proc / click / worn effect or first augment slot type). When the
-#   Legendary is NOT better: HP and mana + B(L), B(L) = 10 + 10 * floor(max(0, L - 10) / 5) (L 10: 10, 20: 30, 40: 70,
-#   60: 110, 65: 120), and when the Enchanted has AC, AC + max(1, ceil(10% of the Enchanted AC)); L = GREATEST(reqlevel,
-#   reclevel) of the base item. A base item with NO level is NOT guessed here: it is skipped (no bonus) and printed as a
-#   manual fix -- server manifest v757-v765 gave the 5,757 existing pairs their bonus with hand-reviewed levels
-#   (claude/notes/legendary_bonus_2026-10-19/legendary_bonus.csv; table items_legendary_bonus). Bags / books (itemclass
-#   not 0) and items with slots 0 are left alone, as in the manifest.
 # RULE FOR EDITING ITEMS FROM NOW ON
 #   Change the BASE item and let the formula derive the tiers (re-run this script with --no-new-only, which only
 #   RAISES columns, or the manifest's formula). Do not hand-type stats into a +1000000 / +2000000 row; the health check
@@ -246,8 +233,6 @@ my $updated_legendary = 0;
 my $skipped_no_stats = 0;
 my $processed = 0;
 my $batch_count = 0;
-my $legendary_bonus_applied = 0;   # Legendary not better than its Enchanted: bonus applied (2026-10-19)
-my @legendary_no_level;            # ... the same, but the base item has no level: skipped, manual fix
 
 # Process Enchanted items if enabled
 if ($process_enchanted) {
@@ -269,11 +254,6 @@ if (!$new_only) {
     print "Updated $updated_enchanted Enchanted, $updated_legendary Legendary\n";
 }
 print "Skipped $skipped_no_stats items with no relevant stats\n";
-print "Legendary not better than Enchanted: bonus applied to $legendary_bonus_applied, skipped (no level) " . scalar(@legendary_no_level) . "\n";
-if (@legendary_no_level) {
-    print "MANUAL FIX NEEDED (no reqlevel / reclevel; add them by hand, see claude/notes/legendary_bonus_2026-10-19):\n";
-    print "  $_\n" for @legendary_no_level;
-}
 print "Total modified: " . ($created_enchanted + $created_legendary + $updated_enchanted + $updated_legendary) . " items\n";
 
 $dbh->disconnect();
@@ -561,62 +541,7 @@ sub calculate_legendary_stats {
         $stats{procrate} += 10; # +10 additional (on top of the +10 from enchanted)
     }
 
-    apply_legendary_bonus($base, \%stats, $enchanted);          # LAST: beat the Enchanted in something (2026-10-19)
-
     return \%stats;
-}
-
-# The owner's test (2026-10-19, see the HISTORY NOTE): is the Legendary better than its Enchanted copy in anything?
-my @BETTER_HIGHER = qw(hp mana endur ac damage attack astr asta aagi adex awis aint acha mr fr cr dr pr svcorruption
-                       heroic_str heroic_sta heroic_agi heroic_dex heroic_wis heroic_int heroic_cha regen manaregen
-                       enduranceregen haste spelldmg healamt elemdmgamt banedmgamt bardvalue bagslots bagwr);
-my @BETTER_DIFFERENT = qw(focuseffect proceffect clickeffect worneffect augslot1type);
-sub legendary_is_better {
-    my ($l, $e) = @_;
-    my $n = sub { my $x = $_[0]; return (defined $x && $x ne '') ? $x : 0; };
-    foreach my $c (@BETTER_HIGHER) {
-        return 1 if $n->($l->{$c}) > $n->($e->{$c});
-    }
-    return 1 if $n->($l->{delay}) < $n->($e->{delay}) && $n->($l->{delay}) > 0;    # a faster weapon
-    foreach my $c (@BETTER_DIFFERENT) {
-        return 1 if $n->($l->{$c}) != $n->($e->{$c});
-    }
-    return 0;
-}
-
-# B(L) = 10 + 10 * floor(max(0, L - 10) / 5): L 10 -> 10, 20 -> 30, 40 -> 70, 60 -> 110, 65 -> 120 (no cap).
-sub legendary_bonus {
-    my ($level) = @_;
-    my $x = $level - 10;
-    $x = 0 if $x < 0;
-    return 10 + 10 * int($x / 5);
-}
-
-# A Legendary that is not better than its Enchanted gets HP + B(L), mana + B(L) and, when the Enchanted has AC,
-# AC + max(1, ceil(10% of the Enchanted AC)). L = GREATEST(reqlevel, reclevel) of the base item; no level = no guess:
-# skipped and listed for a manual fix. Bags / books / items with no slots are left alone (the owner's exclusions).
-sub apply_legendary_bonus {
-    my ($base, $l, $e) = @_;
-    return if legendary_is_better($l, $e);
-    return if ($base->{itemclass} || 0) != 0 || !($base->{slots} || 0);
-    my $req = $base->{reqlevel} || 0;
-    my $rec = $base->{reclevel} || 0;
-    my $level = $req > $rec ? $req : $rec;
-    if ($level <= 0) {
-        push @legendary_no_level, "$base->{id} $base->{Name}";
-        print "Legendary not better than Enchanted and the base item has no level -- MANUAL FIX, no bonus: $base->{id} ($base->{Name})\n";
-        return;
-    }
-    my $b = legendary_bonus($level);
-    $l->{hp}   = ($l->{hp}   || 0) + $b;
-    $l->{mana} = ($l->{mana} || 0) + $b;
-    my $eac = $e->{ac} || 0;
-    if ($eac > 0) {
-        my $acb = int(($eac + 9) / 10);
-        $acb = 1 if $acb < 1;
-        $l->{ac} = ($l->{ac} || 0) + $acb;
-    }
-    $legendary_bonus_applied++;
 }
 
 # Helper to check if a value is defined and positive
