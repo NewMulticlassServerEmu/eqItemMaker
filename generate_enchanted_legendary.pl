@@ -313,7 +313,10 @@ sub process_specific_items {
         $query .= " AND base.itemclass = 0";
         # Owner 10-19: never tier mounts (click SPA 113) or familiars (click SPA 108); their tiers were deleted (manifest v758).
         $query .= " AND base.clickeffect NOT IN (SELECT id FROM spells_new WHERE 113 IN (effectid1,effectid2,effectid3,effectid4,effectid5,effectid6,effectid7,effectid8,effectid9,effectid10,effectid11,effectid12) OR 108 IN (effectid1,effectid2,effectid3,effectid4,effectid5,effectid6,effectid7,effectid8,effectid9,effectid10,effectid11,effectid12))";
-        
+        # Owner 10-20: never tier mercenary items (class bit 0x10000 = class 17, mercenary; the ToB client lets only a
+        # mercenary equip them); their 646 copies were deleted (server manifest v780).
+        $query .= " AND (base.classes & 65536) = 0";
+
         $query .= " HAVING needs_special = TRUE";
     } else {
         # Process all equippable base items when update mode is enabled
@@ -348,6 +351,8 @@ sub process_specific_items {
         $query .= " AND itemclass = 0";
         # Owner 10-19: never tier mounts or familiars (see above).
         $query .= " AND clickeffect NOT IN (SELECT id FROM spells_new WHERE 113 IN (effectid1,effectid2,effectid3,effectid4,effectid5,effectid6,effectid7,effectid8,effectid9,effectid10,effectid11,effectid12) OR 108 IN (effectid1,effectid2,effectid3,effectid4,effectid5,effectid6,effectid7,effectid8,effectid9,effectid10,effectid11,effectid12))";
+        # Owner 10-20: never tier mercenary items (see above).
+        $query .= " AND (classes & 65536) = 0";
     }
     
     my $items = $dbh->prepare($query);
