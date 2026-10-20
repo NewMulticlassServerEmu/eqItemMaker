@@ -316,6 +316,9 @@ sub process_specific_items {
         # Owner 10-20: never tier mercenary items (class bit 0x10000 = class 17, mercenary; the ToB client lets only a
         # mercenary equip them); their 646 copies were deleted (server manifest v780).
         $query .= " AND (base.classes & 65536) = 0";
+        # Owner 10-20: never tier items no player race can use (race mask without any of the 16 player race bits, e.g.
+        # live's NPC-only 65536 gear); their 60 copies were deleted (server manifest v782).
+        $query .= " AND (base.races & 65535) <> 0";
 
         $query .= " HAVING needs_special = TRUE";
     } else {
