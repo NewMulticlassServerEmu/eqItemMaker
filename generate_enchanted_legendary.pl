@@ -73,6 +73,17 @@ use Getopt::Long;
 #   exactly as the rows in the database were, so a regenerated tier equals what v748-v756 left there -- except for the
 #   21 base items that carried a heroic resist themselves (2586, 25865, 25866, 900010-900020, 976018-976032): their base
 #   row is folded now too, so the doubling starts from the folded value (most of them sit at 127 either way).
+#
+# 2026-10-19 - NORMAL < ENCHANTED < LEGENDARY (owner; server manifest v762 did the same to every existing item)
+#   tier_order() runs after tob_item_record:
+#   - a negative stat shrinks per tier: half, at most 5 points per tier (-10 -> -5 -> 0; -50 -> -45 -> -40);
+#   - no copy is ever lower than the one below it (Enchanted >= base, Legendary >= Enchanted, delay never slower);
+#   - an Enchanted no better than the base gets +B/2 HP and mana (+5% of the base AC) and its Legendary +B (+10% AC);
+#     a Legendary no better than its Enchanted gets +B (+10% of the Enchanted AC). B(L) = 10 + 10 * floor((L - 10) / 5).
+#     Augments get a small bump instead: A(L) = 5 / 10 / 15 / 20 / 25 (L <= 30 / 50 / 65 / 80 / above), Enchanted +A,
+#     Legendary +2A (+A when only the Legendary is short).
+#   L = GREATEST(reqlevel, reclevel). An item with no level gets NO bonus here: it is printed as a manual fix (the
+#   owner picks the level; never invent one in this script).
 
 # RULE FOR EDITING ITEMS FROM NOW ON
 #   Change the BASE item and let the formula derive the tiers (re-run this script with --no-new-only, which only
@@ -468,8 +479,80 @@ sub v2_tiers {
         $l{$h} = $pos->($v->($h)) + int(($pos->($e{$s}) + 3) / 4);                            # base heroic + 25% of the Enchanted stat
     }
     tob_accuracy_to_heroic_dex($_) for (\%e, \%l);
-    tob_item_record($_) for (\%e, \%l);                        # LAST: fit the ToB client item record (2026-10-19)
+    tob_item_record($_) for (\%e, \%l);                        # fit the ToB client item record (2026-10-19)
+    tier_order($b, \%e, \%l);                                  # LAST: normal < Enchanted < Legendary (2026-10-19)
     return (\%e, \%l);
+}
+
+# Owner 2026-10-19 (see the header): negatives shrink per tier, no copy below the one under it, and each copy better
+# than the one below it (level-scaled HP / mana bonus; small bump for augments). Same rule as server manifest v762.
+my %tier_order_reported;
+sub tier_order {
+    my ($b, $e, $l) = @_;
+    my @num = qw(hp mana endur ac damage attack astr asta aagi adex awis aint acha mr fr cr dr pr svcorruption heroic_str
+                 heroic_sta heroic_agi heroic_dex heroic_wis heroic_int heroic_cha regen manaregen enduranceregen haste spelldmg
+                 healamt elemdmgamt banedmgamt bardvalue);
+    my @neg = qw(hp mana endur ac attack astr asta aagi adex awis aint acha mr fr cr dr pr svcorruption heroic_str heroic_sta
+                 heroic_agi heroic_dex heroic_wis heroic_int heroic_cha regen manaregen enduranceregen haste spelldmg healamt);
+    my $bv = sub { my $x = $b->{$_[0]}; return (defined $x && $x ne '') ? $x : 0; };
+    my $tv = sub { my ($t, $f) = @_; return exists $t->{$f} ? ($t->{$f} || 0) : $bv->($f); };
+    my $max = sub { my $m = shift; for (@_) { $m = $_ if $_ > $m; } return $m; };
+    my $min = sub { return $_[0] < $_[1] ? $_[0] : $_[1]; };
+    foreach my $f (@neg) {
+        my $n = $bv->($f);
+        next unless $n < 0;
+        my $step = $min->(int((-$n + 1) / 2), 5);
+        $e->{$f} = $max->($tv->($e, $f), $n + $step);
+        $l->{$f} = $max->($tv->($l, $f), $min->(0, $n + 2 * $step), $e->{$f});
+    }
+    foreach my $f (@num) {
+        next if $bv->($f) < 0;
+        $e->{$f} = $max->($tv->($e, $f), $bv->($f));
+        $l->{$f} = $max->($tv->($l, $f), $e->{$f});
+    }
+    my $bd = $bv->('delay'); my $ed = $tv->($e, 'delay');
+    $e->{delay} = $bd if $bd > 0 && $ed > $bd;
+    $ed = $tv->($e, 'delay');
+    $l->{delay} = $ed if $ed > 0 && $tv->($l, 'delay') > $ed;
+    my $better = sub {
+        my ($hi, $lo) = @_;   # hashes; a missing column = the base value
+        foreach my $f (@num) { return 1 if $hi->($f) > $lo->($f); }
+        return 1 if $hi->('delay') > 0 && $hi->('delay') < $lo->('delay');
+        return 0;
+    };
+    my $B = sub { return $bv->($_[0]); };
+    my $E = sub { return $tv->($e, $_[0]); };
+    my $L = sub { return $tv->($l, $_[0]); };
+    my $eb = $better->($E, $B);
+    my $le = $better->($L, $E);
+    return if $eb && $le;
+    my $lvl = $max->($bv->('reqlevel'), $bv->('reclevel'));
+    if ($lvl <= 0) {
+        print "MANUAL FIX (no level, no tier bonus): $b->{id} $b->{Name}\n" unless $tier_order_reported{$b->{id}}++;
+        return;
+    }
+    my $isaug = ($bv->('itemtype') == 54 || $bv->('augtype') > 0);
+    my $add = sub { my ($t, $f, $n) = @_; $t->{$f} = $tv->($t, $f) + $n; };
+    if ($isaug) {
+        my $a = $lvl <= 30 ? 5 : $lvl <= 50 ? 10 : $lvl <= 65 ? 15 : $lvl <= 80 ? 20 : 25;
+        if (!$eb) { $add->($e, $_, $a) for qw(hp mana); $add->($l, $_, 2 * $a) for qw(hp mana); }
+        else      { $add->($l, $_, $a) for qw(hp mana); }
+        return;
+    }
+    my $full = 10 + 10 * int(($lvl > 10 ? $lvl - 10 : 0) / 5);
+    my $half = int($full / 2);
+    if (!$eb) {
+        my $bac = $bv->('ac');
+        my $eac = $bac > 0 ? $max->(1, ceil($bac * 0.05)) : 0;
+        my $ench_ac = $E->('ac');
+        my $lac = $ench_ac > 0 ? $max->(ceil($ench_ac * 0.10), $eac + 1) : 0;
+        $add->($e, $_, $half) for qw(hp mana); $add->($e, 'ac', $eac);
+        $add->($l, $_, $full) for qw(hp mana); $add->($l, 'ac', $lac);
+    } else {
+        my $ench_ac = $E->('ac');
+        $add->($l, $_, $full) for qw(hp mana);
+        $add->($l, 'ac', $max->(1, ceil($ench_ac * 0.10))) if $ench_ac > 0;
+    }
 }
 
 # The ToB client item record (2026-10-19, see the HISTORY NOTE; same rule as server manifest v748-v756 and the server's
