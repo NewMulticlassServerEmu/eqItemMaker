@@ -353,6 +353,8 @@ sub process_specific_items {
         $query .= " AND clickeffect NOT IN (SELECT id FROM spells_new WHERE 113 IN (effectid1,effectid2,effectid3,effectid4,effectid5,effectid6,effectid7,effectid8,effectid9,effectid10,effectid11,effectid12) OR 108 IN (effectid1,effectid2,effectid3,effectid4,effectid5,effectid6,effectid7,effectid8,effectid9,effectid10,effectid11,effectid12))";
         # Owner 10-20: never tier mercenary items (see above).
         $query .= " AND (classes & 65536) = 0";
+        # Owner 10-20: never tier items no player race can use (see above).
+        $query .= " AND (races & 65535) <> 0";
     }
     
     my $items = $dbh->prepare($query);
